@@ -1,0 +1,21 @@
+{
+  "required": false,
+  "minVersion": "0.8",
+  "package": "nthcompat.mixin",
+  "plugin": "nthcompat.CompatMixinPlugin",
+  "compatibilityLevel": "JAVA_8",
+  "client": [
+    "BufferBuilderFloatViewMixin",
+    "BlockModelRendererSpriteMarkingMixin",
+    "RenderGlobalSmartAnimationsMixin",
+    "RenderItemSpriteMarkingMixin",
+    "TextureAtlasSpriteGetterMarkingMixin",
+    "TextureAtlasSpriteSmartAnimationsMixin",
+    "WorldVertexBufferUploaderCoordinateMarkingMixin",
+    "SmartLeavesDoubleFaceMixin",
+    "DynamicTextureDataMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}

@@ -1,0 +1,12 @@
+[
+{
+  "modid": "gambiarra",
+  "name": "Gambiarra",
+  "description": "Optimizations and fixes for other mods, with no dependency on Nothirium or OptiFine: worldgen of Recurrent Complex Volts, RTG Continued, Additional Structures and Biomes O' Plenty, the Phoenix Dive crash (Wonderful Enchantments), caches and distant animation of Ice and Fire dragons, OptiRefine fixes (acc placeholders, float view, Smart Animations), SmartLeaves leaves with LoliASM, OptiFine dynamic lights, the Pulsar smooth lighting crash, entity LOD and the server tick (Scaling Health, Scape and Run Parasites, Forgotten Items, Ice and Fire data, stronghold crash). Worldgen and tick run on the server (dedicated or integrated); the rest, only on the client. License: MIT. Build: commit ${commit}.",
+  "version": "${version}",
+  "mcversion": "1.12.2",
+  "authorList": ["Dragonborne"],
+  "credits": "Parts adapted from OptiRefine (MIT) and Recurrent Complex (MIT): see NOTICE in the jar.",
+  "dependencies": []
+}
+]

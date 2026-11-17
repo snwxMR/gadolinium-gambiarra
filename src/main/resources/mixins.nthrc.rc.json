@@ -1,0 +1,15 @@
+{
+  "required": false,
+  "minVersion": "0.8",
+  "package": "nthrc.mixin.rc",
+  "plugin": "nthrc.WorldgenMixinPlugin",
+  "compatibilityLevel": "JAVA_8",
+  "mixins": [
+    "MazeSearchInterruptMixin",
+    "MazeTaskMixin",
+    "RejectBeforePreparationMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}

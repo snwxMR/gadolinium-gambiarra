@@ -1,0 +1,13 @@
+{
+  "required": false,
+  "minVersion": "0.8",
+  "package": "nthrc.mixin.rtg",
+  "plugin": "nthrc.WorldgenMixinPlugin",
+  "compatibilityLevel": "JAVA_8",
+  "mixins": [
+    "SpacedCellularNoiseMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}

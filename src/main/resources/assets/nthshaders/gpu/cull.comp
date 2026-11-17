@@ -1,0 +1,663 @@
+// SPDX-License-Identifier: LGPL-3.0-only
+#version 430 core
+
+// Nothirium terrain culling on the GPU (nthshaders.gpu.GpuTerrain).
+//
+// Input: the list of sections visited by Nothirium's visibility traversal (the "candidates"), in traversal order.
+// Output: the indirect draw commands of each layer, already compacted and in the same order (the translucent layer in
+// reverse, far to near, as Nothirium draws it), the offset of each command and the number of commands of each layer
+// (read by glMultiDrawArraysIndirectCount).
+//
+// Three stages, one dispatch each (the Java side puts a "#define STAGE n" right after #version):
+//   0 = each group of 256 invocations decides its 256 candidates and stores how many go to each region;
+//   1 = a single group adds the groups up in order (prefix sum) and stores where each group starts, and the totals;
+//   2 = each group decides again, adds up within the group and writes the commands at the right position.
+// No atomics in the output: the result is the same every frame and the order is the traversal's.
+//
+// Per-direction face culling (nthshaders.gpu.FaceCulling): the opaque layers of each section come reordered into 7
+// groups (UP, NORTH, WEST, ANY, EAST, SOUTH, DOWN). An axis group is left out when the camera is behind its outermost
+// plane (1/16 block of slack) or, in the shadow pass, when it faces away from the light. The remaining groups form at
+// most 4 continuous runs: up to 4 commands per section and layer. All of them use the same offset (baseInstance =
+// position of the section in the candidate list). Idea, group order, slack and runs come from Aetherium (CompactTerrain and
+// SectionCull, LGPL-3.0, https://github.com/entitybrian69-bit/aetherium), rewritten for the compute shader.
+//
+// Modes (u_Mode):
+//   0 = all layers (no Hi-Z, and the shadow pass);
+//   1 = Hi-Z, phase 1: SOLID only, for the sections visible in the previous frame (region 0);
+//   2 = Hi-Z, phase 2: SOLID of those not drawn in phase 1 that pass the Hi-Z test (region 4), and the CUTOUT,
+//       CUTOUT_MIPPED and TRANSLUCENT layers of everything visible (regions 1 to 3); writes the history.
+
+#ifndef STAGE
+#define STAGE 0
+#endif
+
+#if STAGE == 1
+layout(local_size_x = 1024) in;
+#else
+layout(local_size_x = 256) in;
+#endif
+
+struct Section {
+    ivec4 pos;    // xyz = minimum corner of the section, in blocks; w = stable id (Hi-Z history)
+    uvec4 first;  // first vertex of each layer (SOLID, CUTOUT, CUTOUT_MIPPED, TRANSLUCENT)
+    uvec4 count;  // vertices of each layer (0 = the section does not have the layer)
+    // Direction groups of the opaque layers (nthshaders.gpu.FaceLayout), 2 per layer: faces[2l].xyzw and faces[2l+1].xy =
+    // first vertex of groups 1 to 6 (from first[l]); faces[2l+1].z = planes of UP, NORTH, WEST and EAST,
+    // faces[2l+1].w = of SOUTH and DOWN (signed 8 bits, 1/8 block, relative to the section corner).
+    uvec4 faces[6];
+};
+
+layout(std430, binding = 0) readonly buffer Sections {
+    Section sections[];
+};
+
+// 4 uints per command: count, instanceCount, first, baseInstance. Region r = [r * u_MaxCommands, (r + 1) * u_MaxCommands).
+layout(std430, binding = 1) writeonly buffer Commands {
+    uint commands[];
+};
+
+// 3 floats per candidate (the section offset from the draw origin), read through the commands' baseInstance.
+layout(std430, binding = 2) writeonly buffer Offsets {
+    float offsets[];
+};
+
+// [0..4] = commands of each region; [5] = sections in the frustum; [6] = sections hidden by Hi-Z; [7] = translucent total
+// (for stage 2); [8] = opaque quads drawn and [9] = opaque quads of the sections in the frustum (mode 0, per-direction
+// culling diagnostics).
+layout(std430, binding = 3) buffer Counts {
+    uint counts[];
+};
+
+// By stable id: 1 = visible in the previous frame (Hi-Z).
+layout(std430, binding = 4) buffer History {
+    uint history[];
+};
+
+// Per stage 0 group (12 uint): [0..4] = commands of each region, [5] = in the frustum, [6] = hidden by Hi-Z,
+// [7] = opaque quads drawn, [8] = opaque quads in the frustum. Stage 1 replaces the regions with the start of each group
+// in each region.
+layout(std430, binding = 5) buffer Groups {
+    uint groups[];
+};
+
+#define GROUP_STRIDE 12u
+
+// Per candidate: the stage 0 decision (bits from decide()). Stage 2 only reads it: the two stages are different programs,
+// and recomputing could give another result for a section right on the edge of a plane.
+layout(std430, binding = 6) buffer Flags {
+    uint flags[];
+};
+
+// Dispatch parameters: a single block (one upload per call, the same for all three stages). std140 layout built in
+// nthshaders.gpu.CullParams.
+layout(std140, binding = 0) uniform Params {
+    uvec4 p_Info;           // x = candidates, y = commands per region, z = mode, w = planes
+    // Origins (integer and fractional parts, to keep precision far from the world origin).
+    ivec4 p_OffsetOriginI;  // origin of the draw offsets
+    vec4 p_OffsetOriginF;
+    ivec4 p_PlaneOriginI;   // origin of the planes and of the Hi-Z matrix
+    vec4 p_PlaneOriginF;
+    ivec4 p_FogOriginI;     // fog origin (the traversal camera)
+    vec4 p_FogOriginF;      // w = squared fog distance (< 0 = no fog)
+    vec4 p_HiZInfo;         // xy = depth size (pixels), z = Hi-Z levels, w = stage 0 groups
+    mat4 p_ViewProj;        // Hi-Z: camera matrix, coordinates relative to the plane origin
+    // Frustum planes (RenderLib's Frustum and, in the shadow pass, the shadow map volume), relative to the plane origin.
+    // A section is left out if it lies entirely on the negative side of any plane.
+    vec4 p_Planes[32];
+    // Per-direction face culling: the camera (mode 1) or, in p_FaceOriginF.xyz, the direction to the light (mode 2).
+    ivec4 p_FaceOriginI;
+    vec4 p_FaceOriginF;
+    uvec4 p_FaceInfo;       // x = mode (0 = off, 1 = camera, 2 = light), y = opaque layers it applies to (bits 0..2)
+};
+
+#define u_SectionCount p_Info.x
+#define u_MaxCommands p_Info.y
+#define u_Mode int(p_Info.z)
+#define u_PlaneCount int(p_Info.w)
+#define u_OffsetOriginI p_OffsetOriginI.xyz
+#define u_OffsetOriginF p_OffsetOriginF.xyz
+#define u_PlaneOriginI p_PlaneOriginI.xyz
+#define u_PlaneOriginF p_PlaneOriginF.xyz
+#define u_FogOriginI p_FogOriginI.xyz
+#define u_FogOriginF p_FogOriginF.xyz
+// Same format as AbstractRenderChunk.isFogCulled.
+#define u_FogEndSqr p_FogOriginF.w
+#define u_HiZSize p_HiZInfo.xy
+#define u_HiZLevels int(p_HiZInfo.z)
+#define u_GroupCount uint(p_HiZInfo.w)
+#define u_ViewProj p_ViewProj
+#define u_Planes p_Planes
+#define u_FaceOriginI p_FaceOriginI.xyz
+#define u_FaceOriginF p_FaceOriginF.xyz
+#define u_FaceMode p_FaceInfo.x
+#define u_FaceLayers p_FaceInfo.y
+
+// Hi-Z maximum depth pyramid (fixed texture unit, see nthshaders.gpu.GpuPrograms).
+uniform sampler2D u_HiZ;
+
+// Margin of each section's box (blocks): the test always errs on the side of drawing.
+const float MARGIN = 0.5;
+
+vec3 relative(ivec3 blockPos, ivec3 originI, vec3 originF) {
+    return vec3(blockPos - originI) - originF;
+}
+
+bool inPlanes(vec3 mn, vec3 mx) {
+    for (int i = 0; i < u_PlaneCount; i++) {
+        vec4 p = u_Planes[i];
+        vec3 v = vec3(p.x >= 0.0 ? mx.x : mn.x, p.y >= 0.0 ? mx.y : mn.y, p.z >= 0.0 ? mx.z : mn.z);
+        if (dot(p.xyz, v) + p.w < 0.0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool fogCulled(vec3 mn) {
+    if (u_FogEndSqr < 0.0) {
+        return false;
+    }
+    // clamp(camera, min, min + 16) - camera, with the camera at the origin.
+    vec3 d = clamp(vec3(0.0), mn, mn + vec3(16.0));
+    return max(d.x * d.x + d.z * d.z, d.y * d.y) > u_FogEndSqr;
+}
+
+bool hizVisible(vec3 mn, vec3 mx) {
+    vec2 smin = vec2(1.0e9);
+    vec2 smax = vec2(-1.0e9);
+    float zmin = 1.0e9;
+    for (int i = 0; i < 8; i++) {
+        vec3 c = vec3((i & 1) != 0 ? mx.x : mn.x, (i & 2) != 0 ? mx.y : mn.y, (i & 4) != 0 ? mx.z : mn.z);
+        vec4 clip = u_ViewProj * vec4(c, 1.0);
+        if (clip.w <= 0.001) {
+            // The box crosses the camera plane: visible.
+            return true;
+        }
+        vec3 ndc = clip.xyz / clip.w;
+        smin = min(smin, ndc.xy);
+        smax = max(smax, ndc.xy);
+        zmin = min(zmin, ndc.z);
+    }
+    if (zmin <= -1.0) {
+        return true;
+    }
+    vec2 uvMin = clamp(smin * 0.5 + 0.5, vec2(0.0), vec2(1.0));
+    vec2 uvMax = clamp(smax * 0.5 + 0.5, vec2(0.0), vec2(1.0));
+    float depth = zmin * 0.5 + 0.5;
+    // In pixels of the source depth (u_HiZSize = its size). Texel i of level L covers pixels
+    // [i * 2^(L+1), (i+1) * 2^(L+1)); the last one of each level goes to the end (hiz_init/hiz_reduce).
+    vec2 pxMin = uvMin * u_HiZSize;
+    vec2 pxMax = min(uvMax * u_HiZSize, u_HiZSize - vec2(1.0));
+    float size = max(pxMax.x - pxMin.x, pxMax.y - pxMin.y);
+    // Level at which the box covers at most 2x2 texels.
+    int level = clamp(int(ceil(log2(max(size, 2.0)))) - 1, 0, u_HiZLevels - 1);
+    ivec2 lsize = textureSize(u_HiZ, level);
+    float scale = exp2(float(-(level + 1)));
+    ivec2 p0 = clamp(ivec2(floor(pxMin * scale)), ivec2(0), lsize - ivec2(1));
+    ivec2 p1 = clamp(ivec2(floor(pxMax * scale)), ivec2(0), lsize - ivec2(1));
+    float d = 0.0;
+    for (int y = p0.y; y <= p1.y; y++) {
+        for (int x = p0.x; x <= p1.x; x++) {
+            d = max(d, texelFetch(u_HiZ, ivec2(x, y), level).r);
+        }
+    }
+    // Slack for float error far from the camera (the screen depth has 24 bits; the math above, 32-bit float).
+    return depth <= d + 1.0e-6;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Per-direction face culling
+
+const uint ALL_GROUPS = 127u;
+const uint ANY_BIT = 8u;
+// Plane slack (blocks): the same as Aetherium, covers float error and the rounding of the planes (1/8).
+const float FACE_EPSILON = 0.0625;
+// Faces almost edge-on to the light stay in (what is edge-on casts nothing, but costs nothing either).
+const float LIGHT_EPSILON = 0.01;
+
+// First vertex of each group of the layer (st[7] = end of the layer).
+void groupStarts(Section s, uint layer, out uint st[8]) {
+    uvec4 a = s.faces[layer * 2u];
+    uvec4 b = s.faces[layer * 2u + 1u];
+    st[0] = 0u;
+    st[1] = a.x;
+    st[2] = a.y;
+    st[3] = a.z;
+    st[4] = a.w;
+    st[5] = b.x;
+    st[6] = b.y;
+    st[7] = s.count[layer];
+}
+
+// Groups the camera can see (c = camera relative to the section corner).
+uint cameraMask(Section s, uint layer, vec3 c) {
+    uvec4 b = s.faces[layer * 2u + 1u];
+    int up = bitfieldExtract(int(b.z), 0, 8);
+    int north = bitfieldExtract(int(b.z), 8, 8);
+    int west = bitfieldExtract(int(b.z), 16, 8);
+    int east = bitfieldExtract(int(b.z), 24, 8);
+    int south = bitfieldExtract(int(b.w), 0, 8);
+    int down = bitfieldExtract(int(b.w), 8, 8);
+    uint m = ANY_BIT;
+    // Minimum planes (the face points to +axis): -128 = always. Maximum planes: 127 = always.
+    if (up == -128 || c.y > float(up) * 0.125 - FACE_EPSILON) {
+        m |= 1u;
+    }
+    if (north == 127 || c.z < float(north) * 0.125 + FACE_EPSILON) {
+        m |= 2u;
+    }
+    if (west == 127 || c.x < float(west) * 0.125 + FACE_EPSILON) {
+        m |= 4u;
+    }
+    if (east == -128 || c.x > float(east) * 0.125 - FACE_EPSILON) {
+        m |= 16u;
+    }
+    if (south == -128 || c.z > float(south) * 0.125 - FACE_EPSILON) {
+        m |= 32u;
+    }
+    if (down == 127 || c.y < float(down) * 0.125 + FACE_EPSILON) {
+        m |= 64u;
+    }
+    return m;
+}
+
+// Groups facing the light (d = unit direction to the light). The same for all sections.
+uint lightMask(vec3 d) {
+    uint m = ANY_BIT;
+    if (d.y > -LIGHT_EPSILON) {
+        m |= 1u;
+    }
+    if (d.z < LIGHT_EPSILON) {
+        m |= 2u;
+    }
+    if (d.x < LIGHT_EPSILON) {
+        m |= 4u;
+    }
+    if (d.x > -LIGHT_EPSILON) {
+        m |= 16u;
+    }
+    if (d.z > -LIGHT_EPSILON) {
+        m |= 32u;
+    }
+    if (d.y < LIGHT_EPSILON) {
+        m |= 64u;
+    }
+    return m;
+}
+
+uint layerMask(Section s, uint layer) {
+    if (u_FaceMode == 0u || ((u_FaceLayers >> layer) & 1u) == 0u) {
+        return ALL_GROUPS;
+    }
+    if (u_FaceMode == 2u) {
+        return lightMask(u_FaceOriginF);
+    }
+    return cameraMask(s, layer, -relative(s.pos.xyz, u_FaceOriginI, u_FaceOriginF));
+}
+
+// Continuous runs of the visible, non-empty groups (an empty group does not split runs): at most 4.
+uint runs(Section s, uint layer, uint mask, out uvec4 rs, out uvec4 re) {
+    uint st[8];
+    groupStarts(s, layer, st);
+    rs = uvec4(0u);
+    re = uvec4(0u);
+    uint n = 0u;
+    bool open = false;
+    uint start = 0u;
+    for (uint g = 0u; g <= 7u; g++) {
+        bool empty = g < 7u && st[g + 1u] <= st[g];
+        bool draw = g < 7u && ((mask >> g) & 1u) != 0u && !empty;
+        if (draw) {
+            if (!open) {
+                open = true;
+                start = st[g];
+            }
+        } else if (!empty && open) {
+            if (n < 4u) {
+                rs[n] = start;
+                re[n] = st[g];
+            }
+            n++;
+            open = false;
+        }
+    }
+    return min(n, 4u);
+}
+
+uint layerOf(uint region) {
+    return region == 4u ? 0u : region;
+}
+
+uint maskOf(uint m, uint layer) {
+    return (m >> (8u + 7u * layer)) & ALL_GROUPS;
+}
+
+// Commands of the candidate in the region (0..4), from the decide() bits.
+uint commandCount(Section s, uint m, uint region) {
+    if (((m >> region) & 1u) == 0u) {
+        return 0u;
+    }
+    if (region == 3u) {
+        return 1u;
+    }
+    uvec4 rs;
+    uvec4 re;
+    uint layer = layerOf(region);
+    return runs(s, layer, maskOf(m, layer), rs, re);
+}
+
+// Commands of the 5 regions, 3 bits each.
+uint packedCounts(Section s, uint m) {
+    uint p = 0u;
+    for (uint r = 0u; r < 5u; r++) {
+        p |= commandCount(s, m, r) << (3u * r);
+    }
+    return p;
+}
+
+// Bits 0..3 = regions 0..3, bit 4 = region 4, bit 5 = in the frustum, bit 6 = hidden by Hi-Z,
+// bit 7 = visible (new history), bits 8..28 = visible groups of the opaque layers (7 per layer).
+uint decide(uint i) {
+    Section s = sections[i];
+    vec3 pmn = relative(s.pos.xyz, u_PlaneOriginI, u_PlaneOriginF) - vec3(MARGIN);
+    vec3 pmx = pmn + vec3(16.0 + 2.0 * MARGIN);
+    vec3 fmn = relative(s.pos.xyz, u_FogOriginI, u_FogOriginF);
+    bool vis = inPlanes(pmn, pmx) && !fogCulled(fmn);
+    if (!vis) {
+        return 0u;
+    }
+    uint faceBits = 0u;
+    uvec4 has = uvec4(greaterThan(s.count, uvec4(0u)));
+    for (uint l = 0u; l < 3u; l++) {
+        uint fm = layerMask(s, l);
+        faceBits |= fm << (8u + 7u * l);
+        if (has[l] != 0u) {
+            uvec4 rs;
+            uvec4 re;
+            has[l] = runs(s, l, fm, rs, re) > 0u ? 1u : 0u;
+        }
+    }
+    if (u_Mode == 0) {
+        return has.x | (has.y << 1) | (has.z << 2) | (has.w << 3) | 32u | faceBits;
+    }
+    bool before = history[uint(s.pos.w)] != 0u;
+    if (u_Mode == 1) {
+        return (before ? has.x : 0u) | 32u | faceBits;
+    }
+    bool hv = hizVisible(pmn, pmx);
+    uint m = 32u | faceBits;
+    if (hv) {
+        m |= 128u;
+    } else {
+        m |= 64u;
+    }
+    if (hv && !before) {
+        m |= has.x << 4;
+    }
+    if (hv || before) {
+        m |= (has.y << 1) | (has.z << 2) | (has.w << 3);
+    }
+    return m;
+}
+
+#if STAGE == 0 || STAGE == 2
+
+shared uint s_flags[256];
+shared uint s_sums[256 * 5];
+
+// Inclusive prefix sum of the commands of the 5 regions within the group (cmdCounts = packedCounts, 3 bits per
+// region); s_sums[t * 5 + r] = sum up to t.
+void groupScan(uint t, uint cmdCounts) {
+    for (uint r = 0u; r < 5u; r++) {
+        s_sums[t * 5u + r] = (cmdCounts >> (3u * r)) & 7u;
+    }
+    barrier();
+    for (uint off = 1u; off < 256u; off <<= 1u) {
+        uint v[5];
+        for (uint r = 0u; r < 5u; r++) {
+            v[r] = t >= off ? s_sums[(t - off) * 5u + r] : 0u;
+        }
+        barrier();
+        for (uint r = 0u; r < 5u; r++) {
+            s_sums[t * 5u + r] += v[r];
+        }
+        barrier();
+    }
+}
+
+#endif
+
+#if STAGE == 0
+
+shared uint s_drawnQuads[256];
+shared uint s_viewQuads[256];
+
+void main() {
+    uint t = gl_LocalInvocationIndex;
+    uint i = gl_GlobalInvocationID.x;
+    uint m = 0u;
+    uint cmdCounts = 0u;
+    uint drawn = 0u;
+    uint inViewQuads = 0u;
+    if (i < u_SectionCount) {
+        m = decide(i);
+        flags[i] = m;
+        Section s = sections[i];
+        cmdCounts = packedCounts(s, m);
+        if (u_Mode == 0 && ((m >> 5) & 1u) != 0u) {
+            // Per-direction culling diagnostics: opaque quads drawn and those of the whole section.
+            for (uint l = 0u; l < 3u; l++) {
+                inViewQuads += s.count[l] / 4u;
+                if (((m >> l) & 1u) != 0u) {
+                    uvec4 rs;
+                    uvec4 re;
+                    uint n = runs(s, l, maskOf(m, l), rs, re);
+                    for (uint k = 0u; k < n; k++) {
+                        drawn += (re[k] - rs[k]) / 4u;
+                    }
+                }
+            }
+        }
+    }
+    s_flags[t] = m;
+    s_drawnQuads[t] = drawn;
+    s_viewQuads[t] = inViewQuads;
+    groupScan(t, cmdCounts);
+    if (t == 255u) {
+        uint g = gl_WorkGroupID.x;
+        for (uint r = 0u; r < 5u; r++) {
+            groups[g * GROUP_STRIDE + r] = s_sums[255u * 5u + r];
+        }
+    }
+    // Diagnostics (frustum, hidden by Hi-Z, quads): plain sum within the group.
+    barrier();
+    if (t == 0u) {
+        uint inView = 0u;
+        uint hidden = 0u;
+        uint drawnSum = 0u;
+        uint viewSum = 0u;
+        for (uint k = 0u; k < 256u; k++) {
+            inView += (s_flags[k] >> 5) & 1u;
+            hidden += (s_flags[k] >> 6) & 1u;
+            drawnSum += s_drawnQuads[k];
+            viewSum += s_viewQuads[k];
+        }
+        uint g = gl_WorkGroupID.x;
+        groups[g * GROUP_STRIDE + 5u] = inView;
+        groups[g * GROUP_STRIDE + 6u] = hidden;
+        groups[g * GROUP_STRIDE + 7u] = drawnSum;
+        groups[g * GROUP_STRIDE + 8u] = viewSum;
+    }
+}
+
+#elif STAGE == 1
+
+shared uint s_scan[1024 * 5];
+
+// A group of 1024: adds up the totals of the stage 0 groups in order (u_GroupCount).
+
+void main() {
+    uint t = gl_LocalInvocationIndex;
+    // Diagnostics: cleared before the sums (frustum in modes 0 and 1; Hi-Z adds up in phase 2).
+    if (t == 0u) {
+        if (u_Mode != 2) {
+            counts[5] = 0u;
+            counts[6] = 0u;
+            counts[8] = 0u;
+            counts[9] = 0u;
+        }
+    }
+    memoryBarrierBuffer();
+    barrier();
+    uint per = (u_GroupCount + 1023u) / 1024u;
+    uint begin = min(t * per, u_GroupCount);
+    uint end = min(begin + per, u_GroupCount);
+    uint local[5];
+    for (uint r = 0u; r < 5u; r++) {
+        local[r] = 0u;
+    }
+    uint inView = 0u;
+    uint hidden = 0u;
+    uint drawnQuads = 0u;
+    uint viewQuads = 0u;
+    for (uint g = begin; g < end; g++) {
+        for (uint r = 0u; r < 5u; r++) {
+            local[r] += groups[g * GROUP_STRIDE + r];
+        }
+        inView += groups[g * GROUP_STRIDE + 5u];
+        hidden += groups[g * GROUP_STRIDE + 6u];
+        drawnQuads += groups[g * GROUP_STRIDE + 7u];
+        viewQuads += groups[g * GROUP_STRIDE + 8u];
+    }
+    for (uint r = 0u; r < 5u; r++) {
+        s_scan[t * 5u + r] = local[r];
+    }
+    barrier();
+    for (uint off = 1u; off < 1024u; off <<= 1u) {
+        uint v[5];
+        for (uint r = 0u; r < 5u; r++) {
+            v[r] = t >= off ? s_scan[(t - off) * 5u + r] : 0u;
+        }
+        barrier();
+        for (uint r = 0u; r < 5u; r++) {
+            s_scan[t * 5u + r] += v[r];
+        }
+        barrier();
+    }
+    // Start of each group in each region (exclusive), in order.
+    uint run[5];
+    for (uint r = 0u; r < 5u; r++) {
+        run[r] = s_scan[t * 5u + r] - local[r];
+    }
+    for (uint g = begin; g < end; g++) {
+        for (uint r = 0u; r < 5u; r++) {
+            uint c = groups[g * GROUP_STRIDE + r];
+            groups[g * GROUP_STRIDE + r] = run[r];
+            run[r] += c;
+        }
+    }
+    // Totals: only the last invocation has the sum of everything.
+    if (t == 1023u) {
+        uint total[5];
+        for (uint r = 0u; r < 5u; r++) {
+            total[r] = s_scan[t * 5u + r];
+        }
+        if (u_Mode == 0) {
+            counts[0] = total[0];
+            counts[1] = total[1];
+            counts[2] = total[2];
+            counts[3] = total[3];
+            counts[4] = 0u;
+        } else if (u_Mode == 1) {
+            counts[0] = total[0];
+            counts[1] = 0u;
+            counts[2] = 0u;
+            counts[3] = 0u;
+            counts[4] = 0u;
+        } else {
+            counts[1] = total[1];
+            counts[2] = total[2];
+            counts[3] = total[3];
+            counts[4] = total[4];
+        }
+        // The translucent total also goes to stage 2 (reverse order).
+        counts[7] = total[3];
+    }
+    // Diagnostics: plain sums.
+    if (inView != 0u && u_Mode != 2) {
+        atomicAdd(counts[5], inView);
+    }
+    if (hidden != 0u && u_Mode == 2) {
+        atomicAdd(counts[6], hidden);
+    }
+    if (u_Mode == 0) {
+        if (drawnQuads != 0u) {
+            atomicAdd(counts[8], drawnQuads);
+        }
+        if (viewQuads != 0u) {
+            atomicAdd(counts[9], viewQuads);
+        }
+    }
+}
+
+#else
+
+void writeCommand(uint region, uint slot, uint first, uint count, uint instance) {
+    uint c = region * u_MaxCommands + slot;
+    commands[c * 4u] = count;
+    commands[c * 4u + 1u] = 1u;
+    commands[c * 4u + 2u] = first;
+    commands[c * 4u + 3u] = instance;
+}
+
+void main() {
+    uint t = gl_LocalInvocationIndex;
+    uint i = gl_GlobalInvocationID.x;
+    bool valid = i < u_SectionCount;
+    uint m = valid ? flags[i] : 0u;
+    Section s;
+    uint cmdCounts = 0u;
+    if (valid) {
+        s = sections[i];
+        cmdCounts = packedCounts(s, m);
+    }
+    groupScan(t, cmdCounts);
+    if (!valid) {
+        return;
+    }
+    uint g = gl_WorkGroupID.x;
+    uint totalTranslucent = counts[7];
+    if ((m & 31u) != 0u) {
+        // One offset per candidate: all its commands use baseInstance = i.
+        vec3 o = relative(s.pos.xyz, u_OffsetOriginI, u_OffsetOriginF);
+        offsets[i * 3u] = o.x;
+        offsets[i * 3u + 1u] = o.y;
+        offsets[i * 3u + 2u] = o.z;
+    }
+    for (uint r = 0u; r < 5u; r++) {
+        uint n = (cmdCounts >> (3u * r)) & 7u;
+        if (n == 0u) {
+            continue;
+        }
+        // Position = start of the group + exclusive sum within the group.
+        uint slot = groups[g * GROUP_STRIDE + r] + s_sums[t * 5u + r] - n;
+        if (r == 3u) {
+            // Translucent (always 1 command): far to near (the traversal list goes near to far).
+            writeCommand(3u, totalTranslucent - 1u - slot, s.first[3], s.count[3], i);
+            continue;
+        }
+        uint layer = layerOf(r);
+        uvec4 rs;
+        uvec4 re;
+        runs(s, layer, maskOf(m, layer), rs, re);
+        for (uint k = 0u; k < n; k++) {
+            writeCommand(r, slot + k, s.first[layer] + rs[k], re[k] - rs[k], i);
+        }
+    }
+    if (u_Mode == 2) {
+        // Only phase 2 writes the history (the shadow pass and mode 0 leave it alone).
+        history[uint(s.pos.w)] = (m & 128u) != 0u ? 1u : 0u;
+    }
+}
+
+#endif

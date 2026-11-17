@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: LGPL-3.0-only
+#version 430 core
+
+// Hi-Z, level 0 (nthshaders.gpu.HiZ): half the resolution of the screen depth, with the LARGEST value (the farthest)
+// of each 2x2 texel block (3 on the last row/column when the size is odd).
+//
+// Only counts what phase 1 of the terrain drew: compares the depth from before (u_Before) with the one from after
+// (u_After). Where it did not change (sky, clouds already there, terrain behind a cloud), the value is 1.0 (as far as
+// possible), and nothing is hidden behind it. Clouds are translucent and cannot hide terrain.
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+uniform sampler2D u_Before;
+uniform sampler2D u_After;
+uniform ivec2 u_SrcSize;
+layout(r32f, binding = 0) writeonly uniform image2D u_Out;
+
+void main() {
+    ivec2 o = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 osize = imageSize(u_Out);
+    if (o.x >= osize.x || o.y >= osize.y) {
+        return;
+    }
+    ivec2 s0 = o * 2;
+    int nx = (o.x == osize.x - 1) ? u_SrcSize.x - s0.x : 2;
+    int ny = (o.y == osize.y - 1) ? u_SrcSize.y - s0.y : 2;
+    nx = clamp(nx, 1, 3);
+    ny = clamp(ny, 1, 3);
+    float m = 0.0;
+    for (int y = 0; y < ny; y++) {
+        for (int x = 0; x < nx; x++) {
+            ivec2 s = min(s0 + ivec2(x, y), u_SrcSize - ivec2(1));
+            float before = texelFetch(u_Before, s, 0).r;
+            float after = texelFetch(u_After, s, 0).r;
+            m = max(m, after < before ? after : 1.0);
+        }
+    }
+    imageStore(u_Out, o, vec4(m, 0.0, 0.0, 0.0));
+}

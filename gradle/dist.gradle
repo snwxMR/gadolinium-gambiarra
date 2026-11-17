@@ -1,0 +1,213 @@
+// ---------------------------------------------------------------------------
+// Packages to install in an instance (dist/teste/<mod>/), one per mod (since 0.11.0, when the addon was split into
+// Gadolinium and Gambiarra):
+//
+//   ./gradlew distTeste        Gadolinium -> dist/teste/gadolinium/ (with the built OptiRefine)
+//   ./gradlew distGambiarra    Gambiarra         -> dist/teste/gambiarra/
+//
+// Each one has the mod's release jar (no smoketest source set and no test hooks), the README.txt, the changelog and the
+// version's O-QUE-TESTAR.md (from docs/o-que-testar, if there is one). Gadolinium's package also has the built
+// OptiRefine (MIT, with its license file). They NEVER carry OptiFine, Nothirium or RenderLib jars. dist/ stays out of git.
+//
+// Version: each package has a new version of its mod (mod_version and gambiarra_version in gradle.properties; rules in
+// the changelog). Before compiling, the check refuses:
+//  - uncommitted changes in what goes into the package (the package's commit has to be exactly what was packaged);
+//  - a version already used by a package of the same mod, or lower than the last one used;
+//  - a version with no entry in the mod's changelog.
+// Each package becomes an annotated tag (local only) on the commit it came from: vX.Y.Z for Gadolinium,
+// gambiarra-vX.Y.Z for Gambiarra. That is the record of the versions used.
+// ---------------------------------------------------------------------------
+
+def distRoot = file("${rootDir}/dist/teste")
+// Everything that goes into the packages: the jars, the READMEs (src/dist), the changelogs and the test notes.
+def packageInputPaths = jarInputPaths + ['src', 'CHANGELOG.md', 'CHANGELOG-Gambiarra.md', 'docs/o-que-testar']
+
+def parseVersion = { String v ->
+    // 1.0.0-rc1 comes before 1.0.0: without -rcN, the fourth number is the largest possible.
+    def m = v =~ /^(\d+)\.(\d+)\.(\d+)(?:-rc(\d+))?$/
+    m.matches() ? [m.group(1) as int, m.group(2) as int, m.group(3) as int, m.group(4) != null ? m.group(4) as int : Integer.MAX_VALUE] : null
+}
+def compareVersions = { List a, List b ->
+    for (int i = 0; i < 4; i++) {
+        if (a[i] != b[i]) {
+            return a[i] <=> b[i]
+        }
+    }
+    return 0
+}
+
+// The two packages. jarTask: the release jar; foreign: what may not be in its jar (it belongs to the other mod or to the
+// tests); buildInfo: the generated class with the version and the commit.
+def packages = [
+        shaders  : [name: 'Gadolinium', version: mod_version, versionKey: 'mod_version', tagPrefix: 'v',
+                    changelog: 'CHANGELOG.md', tests: "docs/o-que-testar/${mod_version}.md", dir: 'gadolinium',
+                    leiame: 'src/dist/teste/README.txt', jarTask: 'remapJar', buildInfo: 'nthshaders/common/BuildInfo.class',
+                    foreign: ~/^(nthcompat|nthrc|gambiarra)\//, withOptiRefine: true],
+        gambiarra: [name: 'Gambiarra', version: gambiarra_version, versionKey: 'gambiarra_version', tagPrefix: 'gambiarra-v',
+                    changelog: 'CHANGELOG-Gambiarra.md', tests: "docs/o-que-testar/gambiarra-${gambiarra_version}.md",
+                    dir: 'gambiarra', leiame: 'src/dist/gambiarra/README.txt', jarTask: 'remapGambiarraJar',
+                    buildInfo: 'gambiarra/common/BuildInfo.class', foreign: ~/^(nthshaders|nthgpu|assets)\//, withOptiRefine: false],
+]
+
+/** Checks the package's version; returns the commit (HEAD) that will be packaged. */
+def checkNewPackageVersion = { Map p ->
+    def head = gitOutput(['rev-parse', '--short=7', 'HEAD'])
+    if (head == null) {
+        throw new GradleException('No git (or outside the repository): the versions already used and the package commit cannot be checked.')
+    }
+    def dirty = gitOutput(['status', '--porcelain', '--'] + packageInputPaths)
+    if (dirty) {
+        throw new GradleException("There are uncommitted changes in what goes into the package; commit them first:\n"
+                + dirty.readLines().take(10).join('\n'))
+    }
+    def version = parseVersion(p.version)
+    if (version == null) {
+        throw new GradleException("${p.versionKey}=${p.version} in gradle.properties is not in the MAJOR.MINOR.PATCH format (e.g. 0.2.1)")
+    }
+    def prefix = p.tagPrefix
+    def used = (gitOutput(['tag', '--list', "${prefix}*".toString()]) ?: '').readLines()*.trim()
+            .findAll { it.startsWith(prefix) && parseVersion(it.substring(prefix.length())) != null }
+    def hint = "Raise ${p.versionKey} in gradle.properties (fix: PATCH+1; new feature: MINOR+1, PATCH=0) and write the entry in ${p.changelog}."
+    def tag = "${prefix}${p.version}".toString()
+    if (used.contains(tag)) {
+        def where = gitOutput(['rev-list', '-n', '1', '--abbrev-commit', '--abbrev=7', tag])
+        throw new GradleException("Version ${p.version} of ${p.name} was already used by a package (tag ${tag}, commit ${where}). ${hint}")
+    }
+    def newest = used.collect { it.substring(prefix.length()) }.max { a, b -> compareVersions(parseVersion(a), parseVersion(b)) }
+    if (newest != null && compareVersions(version, parseVersion(newest)) < 0) {
+        throw new GradleException("Version ${p.version} of ${p.name} is lower than the last one used (${newest}). ${hint}")
+    }
+    def changelog = file(p.changelog)
+    def heading = ~/(?m)^## \[${java.util.regex.Pattern.quote(p.version)}\]/
+    if (!changelog.isFile() || !(changelog.getText('UTF-8') =~ heading).find()) {
+        throw new GradleException("${p.changelog} has no '## [${p.version}] - <date>' entry. Write what changed in this version before making the package.")
+    }
+    return head
+}
+
+// Release build: nothing from the smoketest mod (probes, diagnostic mixins), no test hook (DevHooks.ON =
+// false: javac drops that code) and nothing from the other mod. The version and the commit have to be inside the jar
+// (mcmod.info and BuildInfo).
+def checkReleaseJar = { Map p, File jar, String head ->
+    def forbidden = []
+    def hookText = ~/\[TEST\]|nthshaders\.test|nthcompat\.test|nthrc\.test|nthrc\.validate|dumpShaders|-Dnth|nthshaders\.(enabled|measureBufferSync|forceOptiRefineFingerprint|limitShadowPass)/
+    def mcmodInfo = null
+    def buildInfo = null
+    new java.util.zip.ZipFile(jar).withCloseable { zip ->
+        zip.entries().each { e ->
+            if (e.name.startsWith('nthshaders/smoketest/') || e.name == 'mixins.nthsmoke.json' || e.name.endsWith('/DevHooks.class')) {
+                forbidden << e.name
+            } else if (e.name =~ p.foreign) {
+                forbidden << "${e.name} (from the other mod)".toString()
+            } else if (e.name.endsWith('.class')) {
+                // ISO-8859-1: one byte becomes one character, so the constant pool texts stay readable
+                def text = new String(zip.getInputStream(e).bytes, 'ISO-8859-1')
+                if (text =~ hookText) {
+                    forbidden << "${e.name} (test hook)".toString()
+                }
+                if (e.name == p.buildInfo) {
+                    buildInfo = text
+                }
+            } else if (e.name == 'mcmod.info') {
+                mcmodInfo = new String(zip.getInputStream(e).bytes, 'UTF-8')
+            }
+        }
+    }
+    if (forbidden) {
+        throw new GradleException("The release jar of ${p.name} has things it should not: ${forbidden.take(5)}")
+    }
+    def versionLines = mcmodInfo == null ? 0 : mcmodInfo.readLines().count { it.contains("\"version\": \"${p.version}\"") }
+    def commitLines = mcmodInfo == null ? 0 : mcmodInfo.readLines().count { it.contains("commit ${head}.") }
+    if (versionLines != 1 || commitLines != 1 || buildInfo == null || !buildInfo.contains(p.version) || !buildInfo.contains(head)) {
+        throw new GradleException("The jar of ${p.name} does not carry version ${p.version} and commit ${head} where it should (mcmod.info: "
+                + "${versionLines}/1 versions, ${commitLines}/1 commits; BuildInfo: ${buildInfo != null})")
+    }
+}
+
+packages.each { key, p ->
+    def suffix = key == 'shaders' ? '' : 'Gambiarra'
+    def check = tasks.register("checkPackageVersion${suffix}") {
+        group = 'dist'
+        description = "Checks that the version of the ${p.name} package is new, has an entry in ${p.changelog} and that everything is committed."
+        outputs.upToDateWhen { false }
+        doLast {
+            def head = checkNewPackageVersion(p)
+            logger.lifecycle("${p.name} ${p.version}: new, with an entry in ${p.changelog}; commit ${head}.")
+        }
+    }
+    // The check comes before compiling (BuildInfo takes the version and the commit into the jar).
+    tasks.named('generateBuildInfo') { mustRunAfter check }
+
+    tasks.register(key == 'shaders' ? 'distTeste' : 'distGambiarra') {
+        group = 'dist'
+        description = "Builds dist/teste/${p.dir}/ with ${p.name}, the README.txt and the changelog (a new version for each package)."
+        dependsOn check, p.jarTask, 'checkShaders', 'checkLocks', 'checkLod'
+        outputs.upToDateWhen { false }
+        doLast {
+            // Again, right before packaging: nothing may have changed since the check.
+            def head = checkNewPackageVersion(p)
+            if (buildCommit != head) {
+                throw new GradleException("The jar was compiled at commit '${buildCommit}', but HEAD is ${head}. Make the package again.")
+            }
+            def modJar = tasks.named(p.jarTask).get().outputs.files.singleFile
+            if (p.withOptiRefine && !optiRefineJar.isFile()) {
+                throw new GradleException("OptiRefine is not built yet: run ./gradlew buildOptiRefine")
+            }
+            checkReleaseJar(p, modJar, head)
+
+            def distDir = new File(distRoot, p.dir)
+            project.delete(distDir)
+            // Up to 0.10.0 the package lay loose in dist/teste: it goes away, so it does not mix with each mod's folder.
+            (distRoot.listFiles() ?: [] as File[]).findAll { it.isFile() }.each { it.delete() }
+            distDir.mkdirs()
+            def modOut = new File(distDir, modJar.name)
+            java.nio.file.Files.copy(modJar.toPath(), modOut.toPath())
+            def values = [
+                    version         : p.version,
+                    date            : new Date().format('yyyy-MM-dd'),
+                    commit          : head,
+                    addonJar        : modOut.name,
+                    addonSha        : sha256Of(modOut),
+                    shadersVersion  : mod_version,
+                    gambiarraVersion: gambiarra_version,
+                    optiRefineCommit: optirefine_package_commit.take(7),
+                    cleanroomRequired: cleanroom_required,
+            ]
+            def tagLines = ["${values.addonJar} sha256 ${values.addonSha}"]
+            if (p.withOptiRefine) {
+                def optiRefineOut = new File(distDir, optirefine_package_name as String)
+                java.nio.file.Files.copy(optiRefineJar.toPath(), optiRefineOut.toPath())
+                java.nio.file.Files.copy(file("${depsDir}/OptiRefine/LICENSE").toPath(), new File(distDir, 'LICENSE-OptiRefine.txt').toPath())
+                values.optiRefineJar = optiRefineOut.name
+                values.optiRefineSha = sha256Of(optiRefineOut)
+                tagLines << "${values.optiRefineJar} sha256 ${values.optiRefineSha}"
+            } else {
+                values.optiRefineJar = optirefine_package_name
+            }
+
+            def text = file(p.leiame).getText('UTF-8')
+            values.each { k, v -> text = text.replace('${' + k + '}', v.toString()) }
+            // Windows: the old Notepad does not break lines on \n alone.
+            def crlf = { String s -> s.replace('\r\n', '\n').replace('\n', '\r\n') }
+            new File(distDir, 'README.txt').write(crlf(text), 'UTF-8')
+            new File(distDir, 'CHANGELOG.md').write(crlf(file(p.changelog).getText('UTF-8')), 'UTF-8')
+            // This version's test notes, if there are any.
+            def tests = file(p.tests)
+            if (tests.isFile()) {
+                new File(distDir, 'O-QUE-TESTAR.md').write(crlf(tests.getText('UTF-8')), 'UTF-8')
+            }
+
+            // Records the version as used: an annotated tag on the packaged commit (local only; nothing is pushed).
+            def tag = "${p.tagPrefix}${p.version}".toString()
+            def message = new File(temporaryDir, 'tag-message.txt')
+            message.write("Package dist/teste ${p.name} ${p.version} (${values.date})\n\n" + tagLines.join('\n') + '\n', 'UTF-8')
+            def tagProcess = ['git', 'tag', '-a', tag, '-F', message.absolutePath].execute(null, rootDir)
+            def tagError = tagProcess.err.text.trim()
+            if (tagProcess.waitFor() != 0) {
+                throw new GradleException("Package built in ${distDir}, but tag ${tag} was not created (${tagError}). "
+                        + "Without it the version is not recorded as used: create it with git tag -a ${tag} -m \"Package ${p.version}\" ${head}")
+            }
+            logger.lifecycle("Package ${p.name} ${p.version} (commit ${head}, tag ${tag}) in ${distDir}: ${distDir.list().sort().join(', ')}")
+        }
+    }
+}

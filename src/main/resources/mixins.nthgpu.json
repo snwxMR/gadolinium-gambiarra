@@ -1,0 +1,20 @@
+{
+  "required": false,
+  "minVersion": "0.8",
+  "package": "nthgpu.mixin",
+  "plugin": "nthshaders.gpu.GpuMixinPlugin",
+  "compatibilityLevel": "JAVA_8",
+  "client": [
+    "AbstractChunkRendererGpuMixin",
+    "AbstractRenderChunkGpuMixin",
+    "ChunkRendererGL43GpuMixin",
+    "MinecraftChunkRendererGpuMixin",
+    "RenderChunkTaskCompileGpuMixin",
+    "VBOPartGpuMixin",
+    "RenderLibEntityGraphMixin",
+    "RenderLibTileEntityGraphMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}

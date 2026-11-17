@@ -1,0 +1,24 @@
+Gadolinium (formerly Nothirium Shaders)
+Copyright (c) 2026 Dragonborne (https://github.com/snwxMR)
+
+Gadolinium is licensed under the GNU Lesser General Public License, version 3 (LICENSE and
+licenses/LGPL-3.0.txt, with the GNU GPL it builds on in licenses/GPL-3.0.txt).
+
+It changes other mods at run time through mixins. It does not contain or redistribute those mods.
+
+Third-party code
+----------------
+
+Aetherium Backport (https://github.com/entitybrian69-bit/aetherium), LGPL-3.0
+    Per-direction face culling: nthshaders/gpu/FaceSorter, nthshaders/gpu/FaceLayout and the face
+    groups in assets/nthshaders/gpu/cull.comp are derived from it.
+
+OptiRefine (https://github.com/Ecdcaeb/OptiRefine), MIT License, Copyright (c) 2026 Hileb
+    nthshaders/mixin/compat/RenderGlobalEntitiesMixin adapts its renderEntities. The MIT notice is in
+    META-INF/LICENSE-OptiRefine.txt.
+
+Reference only, no code taken
+-----------------------------
+
+Embeddium (https://github.com/FiniteReality/embeddium), LGPL-3.0
+    Its visibility traversal and entity culling approach were read as a reference.

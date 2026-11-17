@@ -1,0 +1,21 @@
+{
+  "required": false,
+  "minVersion": "0.8",
+  "package": "nthrc.mixin.vanilla",
+  "plugin": "nthrc.VanillaMixinPlugin",
+  "compatibilityLevel": "JAVA_8",
+  "mixins": [
+    "SectionNbtMixin",
+    "SectionVersionMixin",
+    "EntityFieldsMixin",
+    "ItemRestMixin",
+    "MapStorageSaveMixin",
+    "SessionLockMixin",
+    "OreVeinMixin",
+    "ReflectionFieldMixin",
+    "FluidCornerMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}

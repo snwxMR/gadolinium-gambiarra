@@ -1,0 +1,13 @@
+{
+  "required": false,
+  "minVersion": "0.8",
+  "package": "nthrc.mixin.scalinghealth",
+  "plugin": "nthrc.WorldgenMixinPlugin",
+  "compatibilityLevel": "JAVA_8",
+  "mixins": [
+    "ProcessOnceMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}

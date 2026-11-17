@@ -1,0 +1,14 @@
+{
+  "required": false,
+  "minVersion": "0.8",
+  "package": "gambiarra.mixin.lod",
+  "plugin": "gambiarra.lod.LodModsMixinPlugin",
+  "compatibilityLevel": "JAVA_8",
+  "client": [
+    "AdvancedModelRendererLodMixin",
+    "ModelCreatureObjLodMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}

@@ -1,0 +1,42 @@
+Gambiarra
+Copyright (c) 2026 Dragonborne (https://github.com/snwxMR)
+
+Gambiarra is licensed under the MIT License (see LICENSE).
+
+It changes other mods at run time through mixins. It does not contain or redistribute those mods.
+
+Parts that follow other projects' code
+--------------------------------------
+
+Recurrent Complex (https://github.com/Ivorforce/RecurrentComplex), MIT License
+    nthrc/mixin/rc/RejectBeforePreparationMixin and nthrc/rc/EarlyReject follow the order of the steps
+    and checks of StructureGenerator.generateInternal, so a structure can be refused before it is prepared.
+
+OptiRefine (https://github.com/Ecdcaeb/OptiRefine), MIT License, Copyright (c) 2026 Hileb
+    nthcompat/optirefine/AccPlaceholderFix applies the same name rule as OptiRefine's CursedMixinExtensions.
+
+Re-implemented Minecraft logic
+    nthrc/minecraft/OreVein, nthrc/minecraft/SectionNbt and nthcompat/oflights/OfLightsSnapshot repeat, in
+    the same order, the math of a game or OptiFine method, so the result stays identical. That math
+    remains subject to the terms of Minecraft and OptiFine; the MIT License above does not grant any
+    right to it.
+
+Permission notice for Recurrent Complex (Copyright (c) 2022 Lukas Tenbrink) and OptiRefine:
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.

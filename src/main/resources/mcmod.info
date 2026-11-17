@@ -1,0 +1,12 @@
+[
+{
+  "modid": "gadolinium",
+  "name": "Gadolinium",
+  "description": "Shaders and GPU culling for Nothirium: keeps Nothirium's GL 4.3 render engine working with OptiFine shader packs (through OptiRefine), with GPU culling and the Nothirium x OptiRefine compatibility fixes. Formerly Nothirium Shaders. Client only. License: LGPL-3.0. Build: commit ${commit}.",
+  "version": "${version}",
+  "mcversion": "1.12.2",
+  "authorList": ["Dragonborne"],
+  "credits": "Per-direction face culling derived from Aetherium Backport (LGPL-3.0). Entity rendering adapted from OptiRefine (MIT). Embeddium (LGPL-3.0) used as a reference.",
+  "dependencies": []
+}
+]

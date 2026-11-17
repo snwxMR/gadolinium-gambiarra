@@ -1,0 +1,19 @@
+{
+  "required": false,
+  "minVersion": "0.8",
+  "package": "nthshaders.mixin.compat",
+  "plugin": "nthshaders.compat.ShadersCompatPlugin",
+  "compatibilityLevel": "JAVA_8",
+  "client": [
+    "NothiriumCompileBuffersMixin",
+    "NothiriumCompileThreadsMixin",
+    "NothiriumCompilePriorityMixin",
+    "NothiriumDispatcherDisposeMixin",
+    "SmartAnimationsActiveMixin",
+    "RenderGlobalEntitiesMixin",
+    "RenderGlobalUpdateCloudsMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}

@@ -1,0 +1,28 @@
+# Gradle / IDE
+.gradle/
+build/
+out/
+*.iml
+.idea/
+.vscode/
+
+# Generated test environment (instance, logs, screenshots, perf.json)
+run/
+
+# Dependencies made locally (the built OptiRefine, the remapped OptiFine).
+# NEVER commit OptiFine, Nothirium, RenderLib or OptiRefine jars.
+.deps/
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+
+# Machine settings (local paths that override gradle.properties)
+local.properties
+
+# Gradle run logs
+run-*.log
+
+# Packages made by ./gradlew distTeste
+/dist/
+
+# Tools: only the source code goes into git (not the compiled output)
+ferramentas/**/*.class

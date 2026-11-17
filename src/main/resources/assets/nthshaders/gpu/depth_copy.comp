@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: LGPL-3.0-only
+#version 430 core
+
+// Hi-Z (nthshaders.gpu.HiZ): copies the depth from before the terrain into an R32F texture, when the screen depth is a
+// texture (OptiFine's with shaders). That way there is no need to match formats for a copy.
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+uniform sampler2D u_Src;
+layout(r32f, binding = 0) writeonly uniform image2D u_Out;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(u_Out);
+    if (p.x >= size.x || p.y >= size.y) {
+        return;
+    }
+    imageStore(u_Out, p, vec4(texelFetch(u_Src, p, 0).r, 0.0, 0.0, 0.0));
+}

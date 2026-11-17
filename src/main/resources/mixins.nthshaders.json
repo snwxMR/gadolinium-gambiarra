@@ -1,0 +1,16 @@
+{
+  "required": false,
+  "minVersion": "0.8",
+  "package": "nthshaders.mixin",
+  "plugin": "nthshaders.core.NthMixinPlugin",
+  "compatibilityLevel": "JAVA_8",
+  "client": [
+    "nothirium.ChunkRendererGL43Mixin",
+    "nothirium.OptifineRendererMixin",
+    "nothirium.RenderChunkShadowAreaMixin",
+    "optifine.ShadersMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}

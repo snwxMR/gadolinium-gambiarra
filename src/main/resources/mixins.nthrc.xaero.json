@@ -1,0 +1,16 @@
+{
+  "required": false,
+  "minVersion": "0.8",
+  "package": "nthrc.mixin.xaero",
+  "plugin": "nthrc.WorldgenMixinPlugin",
+  "compatibilityLevel": "JAVA_8",
+  "client": [
+    "FlushRunMixin",
+    "FlushWaitMixin",
+    "BiomeColourMixin",
+    "VramQueryMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}

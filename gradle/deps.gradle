@@ -1,0 +1,109 @@
+// ---------------------------------------------------------------------------
+// Local dependencies: the target mods' jars (read only) and the remapped OptiFine.
+//
+// Nothing from here goes into the mods' jars or into the repository (.deps/ and run/
+// are in .gitignore). OptiFine is remapped notch -> SRG from the user's OFFICIAL
+// jar, with Cleanroom's own mcp_config; no OptiFine jar is downloaded from a
+// third-party repository.
+// ---------------------------------------------------------------------------
+
+import java.security.MessageDigest
+
+ext.depsDir = file("${rootDir}/.deps")
+ext.targetModsDir = file(target_mods_dir)
+ext.nothiriumJar = new File(targetModsDir, nothirium_jar)
+ext.renderLibJar = new File(targetModsDir, renderlib_jar)
+ext.fugueJar = new File(targetModsDir, fugue_jar)
+ext.scalarJar = new File(targetModsDir, scalar_jar)
+ext.recurrentComplexJar = new File(targetModsDir, recurrentcomplex_jar)
+ext.ivToolkitJar = new File(targetModsDir, ivtoolkit_jar)
+ext.worldgenTargetJars = [pulsar_jar, rtgc_jar, additionalstructures_jar, biomesoplenty_jar, xaeroworldmap_jar]
+        .collect { new File(targetModsDir, it) }
+ext.iceAndFireJars = [iceandfire_jar, llibrary_jar].collect { new File(targetModsDir, it) }
+ext.lycanitesJar = new File(targetModsDir, lycanites_jar)
+ext.optiFineJar = file(optifine_jar_path)
+ext.optiFineSrgJar = file("${depsDir}/optifine/OptiFine_1.12.2_HD_U_G5-srg.jar")
+
+ext.sha256Of = { File f ->
+    MessageDigest md = MessageDigest.getInstance('SHA-256')
+    f.withInputStream { is ->
+        byte[] buf = new byte[65536]
+        int n
+        while ((n = is.read(buf)) > 0) md.update(buf, 0, n)
+    }
+    return md.digest().encodeHex().toString()
+}
+
+// Fails early (and clearly) if a target jar is missing or is not the version
+// the mods know. Changing versions is a deliberate decision: update the
+// sha256 in gradle.properties AND the version guard in the code.
+ext.verifyJar = { File f, String expected ->
+    if (!f.isFile()) {
+        throw new GradleException("Jar not found: ${f}")
+    }
+    if (expected) {
+        String actual = sha256Of(f)
+        if (actual != expected) {
+            throw new GradleException("Unexpected sha256 for ${f.name}: ${actual} (expected ${expected})")
+        }
+    }
+}
+
+configurations {
+    specialSource
+    mcpConfig
+}
+
+dependencies {
+    specialSource 'net.md-5:SpecialSource:1.11.3:shaded'
+    // The same mcp_config Unimined uses for Cleanroom (notch -> SRG).
+    mcpConfig 'de.oceanlabs.mcp:mcp_config:1.12.2-20260220.202731@zip'
+}
+
+def optiFineStage = file("${depsDir}/optifine/stage")
+
+// 1) Takes only OptiFine's own classes from the official jar (net/optifine,
+//    optifine/, Config). Left out: the xdelta patches of vanilla classes, the
+//    Forge/vecmath stubs OptiFine carries for vanilla mode, and the assets.
+def extractOptiFineClasses = tasks.register('extractOptiFineClasses', Zip) {
+    group = 'deps'
+    description = 'Extracts OptiFine\'s own classes from the official jar.'
+    doFirst { verifyJar(optiFineJar, optifine_sha256) }
+    from(zipTree(optiFineJar)) {
+        include 'Config.class'
+        include 'net/optifine/**'
+        include 'optifine/**'
+    }
+    archiveFileName = 'OptiFine_1.12.2_HD_U_G5-notch.jar'
+    destinationDirectory = optiFineStage
+}
+
+def extractJoinedTsrg = tasks.register('extractJoinedTsrg', Copy) {
+    group = 'deps'
+    from({ zipTree(configurations.mcpConfig.singleFile) }) { include 'config/joined.tsrg' }
+    into optiFineStage
+    eachFile { it.path = it.name }
+    includeEmptyDirs = false
+}
+
+// 2) Remaps notch -> SRG with SpecialSource. `--live` resolves inheritance against
+//    the vanilla client Unimined has already downloaded.
+tasks.register('prepareOptiFineSrg', JavaExec) {
+    group = 'deps'
+    description = 'Makes .deps/optifine/*-srg.jar from the official OptiFine jar.'
+    dependsOn extractOptiFineClasses, extractJoinedTsrg
+    def notchJar = extractOptiFineClasses.flatMap { it.archiveFile }
+    def tsrg = file("${optiFineStage}/joined.tsrg")
+    inputs.file(notchJar)
+    inputs.file(tsrg)
+    outputs.file(optiFineSrgJar)
+    javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(25) }
+    mainClass = 'net.md_5.specialsource.SpecialSource'
+    classpath = configurations.specialSource + files({ unimined.minecrafts[sourceSets.main].minecraftData.minecraftClientFile })
+    argumentProviders.add({
+        ['--live',
+         '-i', notchJar.get().asFile.absolutePath,
+         '-o', optiFineSrgJar.absolutePath,
+         '-m', tsrg.absolutePath]
+    } as CommandLineArgumentProvider)
+}

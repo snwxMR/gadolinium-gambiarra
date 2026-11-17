@@ -1,0 +1,155 @@
+// ---------------------------------------------------------------------------
+// OptiRefine (MIT, Ecdcaeb/OptiRefine), built locally.
+//
+// The mods accept two OptiRefine builds (OptiRefineFingerprint.KNOWN): commit 78ff8ce
+// and the v0.1.0-alpha release (commit 6c4855e). Both are built from source
+// (optirefine_commits), one after the other in the same checkout; each jar goes to
+// .deps/mods/OptiRefine-<commit>.jar, where checkLocks reads it. The package build
+// (optirefine_package_commit: 78ff8ce, the one that starts with Nothirium) must come out
+// with optirefine_package_sha256, the jar every test used; it goes into Gadolinium's
+// test package and is the one attached to the GitHub release, with its MIT license.
+// They never go into the mods' jars or into the repository.
+//
+//   ./gradlew buildOptiRefine
+// ---------------------------------------------------------------------------
+
+import org.gradle.internal.os.OperatingSystem
+
+def optiRefineDir = file("${depsDir}/OptiRefine")
+def localOptiFineRepo = file("${depsDir}/optifine-maven")
+def optiRefineCommits = (optirefine_commits as String).split(',')*.trim().findAll { it }
+ext.optiRefineJarOf = { String commit -> file("${depsDir}/mods/OptiRefine-${commit.take(7)}.jar") }
+// The build that goes into Gadolinium's test package (the one that starts with Nothirium).
+ext.optiRefineJar = optiRefineJarOf(optirefine_package_commit as String)
+if (!optiRefineCommits.contains(optirefine_package_commit)) {
+    throw new GradleException("optirefine_package_commit (${optirefine_package_commit}) is not in optirefine_commits")
+}
+
+// Publishes to a local maven (files only) the two artifacts OptiRefine's build
+// asks for, both made from the user's OFFICIAL jar:
+//  - 1.12.2-HD_U_G5_unpatched_srg: OptiFine's classes remapped to SRG
+//  - 1.12.2-HD_U_G5: the official jar itself (only to resolve runtimeOnly)
+tasks.register('publishLocalOptiFine') {
+    group = 'deps'
+    description = 'Builds the local OptiFine maven from the official jar.'
+    dependsOn 'prepareOptiFineSrg'
+    inputs.files(optiFineJar, optiFineSrgJar)
+    outputs.dir(localOptiFineRepo)
+    doLast {
+        verifyJar(optiFineJar, optifine_sha256)
+        def publish = { String version, File jar ->
+            def dir = new File(localOptiFineRepo, "net/optifine/optifine/${version}")
+            dir.mkdirs()
+            java.nio.file.Files.copy(jar.toPath(), new File(dir, "optifine-${version}.jar").toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            new File(dir, "optifine-${version}.pom").text = """<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>net.optifine</groupId>
+  <artifactId>optifine</artifactId>
+  <version>${version}</version>
+</project>
+"""
+        }
+        publish('1.12.2-HD_U_G5_unpatched_srg', optiFineSrgJar)
+        publish('1.12.2-HD_U_G5', optiFineJar)
+    }
+}
+
+def gitIn = { File dir, List<String> args ->
+    def cmd = ['git', '-c', 'core.longpaths=true'] + args
+    def proc = new ProcessBuilder(cmd).directory(dir).redirectErrorStream(true).start()
+    def out = proc.inputStream.text
+    if (proc.waitFor() != 0) {
+        throw new GradleException("git ${args.join(' ')} failed:\n${out}")
+    }
+    return out.trim()
+}
+
+// One checkout task and one build task per commit. They share the checkout: each checkout runs only after the previous build.
+def optiRefineBuilds = []
+optiRefineCommits.eachWithIndex { String commit, int i ->
+    def shortId = commit.take(7)
+    def previousBuild = i > 0 ? "buildOptiRefine_${optiRefineCommits[i - 1].take(7)}" : null
+    def checkout = tasks.register("checkoutOptiRefine_${shortId}") {
+        group = 'deps'
+        description = "Clones OptiRefine (the first time) and pins the checkout to ${shortId}."
+        outputs.upToDateWhen { false }
+        if (previousBuild != null) {
+            mustRunAfter previousBuild
+        }
+        doLast {
+            if (!new File(optiRefineDir, '.git').isDirectory()) {
+                optiRefineDir.parentFile.mkdirs()
+                gitIn(optiRefineDir.parentFile, ['clone', '--no-checkout', optirefine_repo, optiRefineDir.name])
+            }
+            gitIn(optiRefineDir, ['config', 'core.longpaths', 'true'])
+            gitIn(optiRefineDir, ['fetch', '--quiet', 'origin'])
+            gitIn(optiRefineDir, ['checkout', '--quiet', '--force', commit])
+            def head = gitIn(optiRefineDir, ['rev-parse', 'HEAD'])
+            if (head != commit) {
+                throw new GradleException("OptiRefine at ${head}, expected ${commit}")
+            }
+            logger.lifecycle("OptiRefine at ${head}")
+        }
+    }
+    optiRefineBuilds << tasks.register("buildOptiRefine_${shortId}", Exec) {
+        group = 'deps'
+        description = "Builds OptiRefine @ ${shortId} and copies the jar to .deps/mods/."
+        dependsOn checkout, 'publishLocalOptiFine'
+        workingDir optiRefineDir
+        def jdk = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(25) }
+        doFirst {
+            environment 'JAVA_HOME', jdk.get().metadata.installationPath.asFile.absolutePath
+        }
+        // Absolute path: cmd may have NoDefaultCurrentDirectoryInExePath set.
+        def gradlew = OperatingSystem.current().isWindows()
+                ? ['cmd', '/c', new File(optiRefineDir, 'gradlew.bat').absolutePath]
+                : [new File(optiRefineDir, 'gradlew').absolutePath]
+        commandLine gradlew + [
+                '--no-daemon', '--console=plain',
+                '--init-script', file('gradle/optirefine-local.init.gradle').absolutePath,
+                "-PnthshadersOptiFineRepo=${localOptiFineRepo.absolutePath}",
+                'assemble'
+        ]
+        doLast {
+            // The jar is named after the mod_version of that commit (0.0.1-indev at 78ff8ce, 0.1.0-alpha at the release).
+            def props = new Properties()
+            new File(optiRefineDir, 'gradle.properties').withInputStream { props.load(it) }
+            def built = new File(optiRefineDir, "build/libs/optirefine-${props.getProperty('mod_version').trim()}.jar")
+            if (!built.isFile()) {
+                throw new GradleException("OptiRefine jar not found at ${built}")
+            }
+            def out = optiRefineJarOf(commit)
+            out.parentFile.mkdirs()
+            java.nio.file.Files.copy(built.toPath(), out.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            if (commit == optirefine_package_commit) {
+                // The package (and the GitHub release) carries this jar: it has to be the file every test used.
+                verifyJar(out, optirefine_package_sha256)
+            }
+            logger.lifecycle("OptiRefine: ${out} (sha256 ${sha256Of(out)})")
+        }
+    }
+}
+
+tasks.register('buildOptiRefine') {
+    group = 'deps'
+    description = "Builds OptiRefine at ${optiRefineCommits*.take(7).join(' and ')} and copies the jars to .deps/mods/."
+    dependsOn optiRefineBuilds
+}
+
+// Computes the fingerprint of a built OptiRefine (the values in OptiRefineFingerprint.KNOWN):
+// the package build, or another one with -PoptiRefineCommit=<commit>. With -Pdescribe it also
+// prints the canonical description that goes into the hash.
+tasks.register('optiRefineFingerprint', JavaExec) {
+    group = 'deps'
+    description = 'Prints the fingerprint of a built OptiRefine in .deps/mods/.'
+    dependsOn 'classes'
+    javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(25) }
+    mainClass = 'nthshaders.common.OptiRefineFingerprint'
+    classpath = sourceSets.main.output + sourceSets.main.compileClasspath
+    args (project.hasProperty('optiRefineCommit') ? optiRefineJarOf(project.property('optiRefineCommit') as String) : optiRefineJar).absolutePath
+    if (project.hasProperty('describe')) {
+        args '--describe'
+    }
+}

@@ -1,0 +1,20 @@
+{
+  "required": false,
+  "minVersion": "0.8",
+  "package": "nthcompat.mixin.iceandfire",
+  "plugin": "nthcompat.iceandfire.IafMixinPlugin",
+  "compatibilityLevel": "JAVA_8",
+  "client": [
+    "ModelAnimatorAccessor",
+    "TabulaAnimatorPoseCacheMixin",
+    "TabulaModelDistantAnimationMixin",
+    "AdvancedModelRendererPairsMixin",
+    "TabulaModelKeyMixin",
+    "IceDragonCubeLookupMixin",
+    "FireDragonCubeLookupMixin",
+    "SeaSerpentCubeLookupMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}

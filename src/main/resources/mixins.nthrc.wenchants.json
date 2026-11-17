@@ -1,0 +1,13 @@
+{
+  "required": false,
+  "minVersion": "0.8",
+  "package": "nthrc.mixin.wenchants",
+  "plugin": "nthrc.WorldgenMixinPlugin",
+  "compatibilityLevel": "JAVA_8",
+  "mixins": [
+    "PhoenixDiveMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}

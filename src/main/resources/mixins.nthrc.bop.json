@@ -1,0 +1,14 @@
+{
+  "required": false,
+  "minVersion": "0.8",
+  "package": "nthrc.mixin.bop",
+  "plugin": "nthrc.WorldgenMixinPlugin",
+  "compatibilityLevel": "JAVA_8",
+  "client": [
+    "FogScanMixin",
+    "FogColourMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}

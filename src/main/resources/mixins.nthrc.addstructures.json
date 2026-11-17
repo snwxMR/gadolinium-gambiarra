@@ -1,0 +1,13 @@
+{
+  "required": false,
+  "minVersion": "0.8",
+  "package": "nthrc.mixin.addstructures",
+  "plugin": "nthrc.WorldgenMixinPlugin",
+  "compatibilityLevel": "JAVA_8",
+  "mixins": [
+    "GroundScanMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}

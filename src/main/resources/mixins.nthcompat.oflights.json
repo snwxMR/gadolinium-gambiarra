@@ -1,0 +1,15 @@
+{
+  "required": false,
+  "minVersion": "0.8",
+  "package": "nthcompat.mixin.oflights",
+  "plugin": "nthcompat.oflights.OfLightsMixinPlugin",
+  "compatibilityLevel": "JAVA_8",
+  "client": [
+    "OfDynamicLightsMixin",
+    "OfDynamicLightMixin",
+    "NothiriumMarkDirtyLightMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}

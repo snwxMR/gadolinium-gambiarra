@@ -1,0 +1,13 @@
+{
+  "required": false,
+  "minVersion": "0.8",
+  "package": "nthcompat.mixin.pulsar",
+  "plugin": "nthcompat.pulsar.PulsarMixinPlugin",
+  "compatibilityLevel": "JAVA_8",
+  "client": [
+    "SmoothLightOcclusionScratchMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}

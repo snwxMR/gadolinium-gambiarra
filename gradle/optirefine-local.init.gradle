@@ -1,0 +1,36 @@
+// ---------------------------------------------------------------------------
+// Init script used ONLY to build OptiRefine (Ecdcaeb/OptiRefine).
+//
+// Its build asks a third-party maven (ecdcaeb.github.io/maven) for the
+// OptiFine jars. Here:
+//  1) the `net.optifine` group comes EXCLUSIVELY from a local maven,
+//     made by the :publishLocalOptiFine task from the official jar;
+//  2) the third-party maven is neutralized (it serves no artifact).
+//
+// Path of the local maven: property -PnthshadersOptiFineRepo=<folder>.
+// ---------------------------------------------------------------------------
+
+allprojects { project ->
+    def repoPath = project.findProperty('nthshadersOptiFineRepo')
+    if (repoPath == null) {
+        throw new GradleException('Missing -PnthshadersOptiFineRepo=<folder of the local OptiFine maven>')
+    }
+
+    project.repositories.configureEach { repo ->
+        if (repo instanceof MavenArtifactRepository && repo.url.toString().contains('ecdcaeb.github.io')) {
+            repo.content { excludeGroupByRegex('.*') }
+        }
+    }
+
+    project.repositories {
+        exclusiveContent {
+            forRepository {
+                maven {
+                    name = 'LocalOptiFine'
+                    url = project.uri(repoPath)
+                }
+            }
+            filter { includeGroup('net.optifine') }
+        }
+    }
+}

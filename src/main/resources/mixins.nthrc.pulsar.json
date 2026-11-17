@@ -1,0 +1,13 @@
+{
+  "required": false,
+  "minVersion": "0.8",
+  "package": "nthrc.mixin.pulsar",
+  "plugin": "nthrc.WorldgenMixinPlugin",
+  "compatibilityLevel": "JAVA_8",
+  "mixins": [
+    "RetryOrderMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}
